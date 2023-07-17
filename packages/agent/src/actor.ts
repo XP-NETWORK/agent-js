@@ -147,7 +147,7 @@ export type ActorSubclass<T = Record<string, ActorMethod>> = Actor & T;
  * An actor method type, defined for each methods of the actor service.
  */
 export interface ActorMethod<Args extends unknown[] = unknown[], Ret = unknown> {
-  (...args: Args): Promise<Ret>;
+  (...args: Args): Promise<[Ret, string | undefined]>;
   withOptions(options: CallConfig): (...args: Args) => Promise<Ret>;
 }
 
@@ -366,7 +366,7 @@ function _createActorMethod(
   func: IDL.FuncClass,
   blsVerify?: CreateCertificateOptions['blsVerify'],
 ): ActorMethod {
-  let caller: (options: CallConfig, ...args: unknown[]) => Promise<unknown>;
+  let caller: (options: CallConfig, ...args: unknown[]) => Promise<[unknown, string | undefined]>;
   if (func.annotations.includes('query') || func.annotations.includes('composite_query')) {
     caller = async (options, ...args) => {
       // First, if there's a config transformation, call it.
@@ -390,11 +390,14 @@ function _createActorMethod(
 
         case QueryResponseStatus.Replied:
           return func.annotations.includes(ACTOR_METHOD_WITH_HTTP_DETAILS)
-            ? {
-                httpDetails: result.httpDetails,
-                result: decodeReturnValue(func.retTypes, result.reply.arg),
-              }
-            : decodeReturnValue(func.retTypes, result.reply.arg);
+            ? [
+                {
+                  httpDetails: result.httpDetails,
+                  result: decodeReturnValue(func.retTypes, result.reply.arg),
+                },
+                undefined,
+              ]
+            : [decodeReturnValue(func.retTypes, result.reply.arg), undefined];
       }
     };
   } else {
@@ -433,25 +436,35 @@ function _createActorMethod(
 
       if (responseBytes !== undefined) {
         return shouldIncludeHttpDetails
-          ? {
-              httpDetails: response,
-              result: decodeReturnValue(func.retTypes, responseBytes),
-            }
-          : decodeReturnValue(func.retTypes, responseBytes);
+          ? [
+              {
+                httpDetails: response,
+                result: decodeReturnValue(func.retTypes, responseBytes),
+              },
+              Buffer.from(requestId).toString('hex'),
+            ]
+          : [
+              decodeReturnValue(func.retTypes, responseBytes),
+              Buffer.from(requestId).toString('hex'),
+            ];
       } else if (func.retTypes.length === 0) {
         return shouldIncludeHttpDetails
-          ? {
-              httpDetails: response,
-              result: undefined,
-            }
-          : undefined;
+          ? [
+              {
+                httpDetails: response,
+                result: undefined,
+              },
+
+              Buffer.from(requestId).toString('hex'),
+            ]
+          : [undefined, undefined];
       } else {
         throw new Error(`Call was returned undefined, but type [${func.retTypes.join(',')}].`);
       }
     };
   }
 
-  const handler = (...args: unknown[]) => caller({}, ...args);
+  const handler: ActorMethod = (...args: unknown[]) => caller({}, ...args);
   handler.withOptions =
     (options: CallConfig) =>
     (...args: unknown[]) =>
